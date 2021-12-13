@@ -361,3 +361,6 @@ set(USE_GTEST AUTO)
 # Enable using CUTLASS as a BYOC backend
 # Need to have USE_CUDA=ON
 set(USE_CUTLASS OFF)
+
+# Whether to use generic Scale4Edge codegen
+set(USE_GENERIC ON)
