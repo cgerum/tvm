@@ -4967,38 +4967,11 @@ onnx_test_folders = sorted(
 )
 
 unsupported_onnx_tests = [
-    "test_basic_convinteger",
-    "test_batchnorm_epsilon_training_mode",
-    "test_batchnorm_example_training_mode",
-    "test_bernoulli",
-    "test_bernoulli_expanded",
-    "test_bernoulli_double",
-    "test_bernoulli_double_expanded",
-    "test_bernoulli_seed",
-    "test_bernoulli_seed_expanded",
     "test_cast_BFLOAT16_to_FLOAT",
     "test_cast_DOUBLE_to_FLOAT16",
     "test_cast_FLOAT_to_BFLOAT16",
     "test_cast_FLOAT_to_STRING",
     "test_cast_STRING_to_FLOAT",
-    "test_castlike_BFLOAT16_to_FLOAT",
-    "test_castlike_BFLOAT16_to_FLOAT_expanded",
-    "test_castlike_DOUBLE_to_FLOAT",
-    "test_castlike_DOUBLE_to_FLOAT16",
-    "test_castlike_DOUBLE_to_FLOAT16_expanded",
-    "test_castlike_FLOAT16_to_DOUBLE",
-    "test_castlike_FLOAT16_to_FLOAT",
-    "test_castlike_FLOAT_to_BFLOAT16",
-    "test_castlike_FLOAT_to_BFLOAT16_expanded",
-    "test_castlike_FLOAT_to_DOUBLE",
-    "test_castlike_FLOAT_to_FLOAT16",
-    "test_castlike_FLOAT_to_STRING",
-    "test_castlike_FLOAT_to_STRING_expanded",
-    "test_castlike_STRING_to_FLOAT",
-    "test_castlike_STRING_to_FLOAT_expanded",
-    "test_convinteger_with_padding",
-    "test_convinteger_without_padding",
-    "test_convtranspose_autopad_same",
     "test_convtranspose_dilations",
     "test_convtranspose_output_shape",
     "test_cumsum_1d",
@@ -5014,13 +4987,9 @@ unsupported_onnx_tests = [
     "test_dropout_default_mask",
     "test_dropout_default_mask_ratio",
     "test_dropout_default_ratio",
-    "test_gru_batchwise",
-    "test_hardswish",
-    "test_identity_sequence",
     "test_if_seq",
     "test_loop11",
     "test_loop13_seq",
-    "test_lstm_batchwise",
     "test_matmulinteger",
     "test_maxpool_2d_same_lower",
     "test_maxpool_2d_same_upper",
@@ -5030,10 +4999,6 @@ unsupported_onnx_tests = [
     "test_mvn",
     # This test fails llvm with a lowering error:
     "test_nllloss_NCd1d2d3_none_no_weight_negative_ii_expanded",
-    "test_optional_has_element",
-    "test_optional_get_element",
-    "test_optional_get_element_sequence",
-    "test_optional_has_element_empty",
     "test_qlinearmatmul_3D",
     "test_range_float_type_positive_delta_expanded",
     "test_range_int32_type_negative_delta_expanded",
@@ -5049,17 +5014,8 @@ unsupported_onnx_tests = [
     "test_reduce_sum_negative_axes_keepdims_random",
     "test_rnn_seq_length",
     "test_round",
-    "test_scan9_sum",
-    "test_scan_sum",
     "test_sequence_insert_at_back",
     "test_sequence_insert_at_front",
-    "test_shape_end_1",
-    "test_shape_end_negative_1",
-    "test_shape_start_1",
-    "test_shape_start_1_end_2",
-    "test_shape_start_1_end_negative_1",
-    "test_shape_start_negative_1",
-    "test_simple_rnn_batchwise",
     "test_simple_rnn_defaults",
     "test_simple_rnn_with_initial_bias",
     "test_split_variable_parts_1d",
@@ -5085,24 +5041,6 @@ unsupported_onnx_tests = [
     "test_training_dropout_mask",
     "test_training_dropout_zero_ratio",
     "test_training_dropout_zero_ratio_mask",
-    "test_tril",
-    "test_tril_pos",
-    "test_tril_square",
-    "test_tril_square_neg",
-    "test_tril_neg",
-    "test_tril_one_row_neg",
-    "test_tril_out_neg",
-    "test_tril_out_pos",
-    "test_tril_zero",
-    "test_triu",
-    "test_triu_one_row",
-    "test_triu_out_neg_out",
-    "test_triu_out_pos",
-    "test_triu_neg",
-    "test_triu_pos",
-    "test_triu_square",
-    "test_triu_square_neg",
-    "test_triu_zero",
     # These unsqueeze tests work, but take 2+ hrs to run
     "test_unsqueeze_three_axes",
     "test_unsqueeze_two_axes",
@@ -6033,6 +5971,172 @@ def test_convinteger(target, dev):
     )
 
 
+@tvm.testing.parametrize_targets
+def test_scan(target, dev):
+    def verify_scan(
+        input_shapes,
+        output_shapes,
+        num_scan_inputs,
+        scan_input_axes,
+        scan_input_directions,
+        scan_output_axes,
+        scan_output_directions,
+        opset,
+    ):
+        import copy
+
+        body_input_shapes = copy.deepcopy(input_shapes)
+        num_state_inputs = len(input_shapes) - num_scan_inputs
+
+        if opset == 8:
+            for i in range(len(input_shapes)):
+                body_input_shapes[i].pop(0)
+            for i in range(num_state_inputs, len(input_shapes)):
+                body_input_shapes[i].pop(0)
+        else:
+            for i in range(num_state_inputs, len(input_shapes)):
+                body_input_shapes[i].pop(scan_input_axes[i - num_state_inputs])
+
+        initial0 = onnx.helper.make_tensor_value_info(
+            "initial0", onnx.TensorProto.FLOAT, body_input_shapes[0]
+        )
+        initial1 = onnx.helper.make_tensor_value_info(
+            "initial1", onnx.TensorProto.FLOAT, body_input_shapes[1]
+        )
+        input0 = onnx.helper.make_tensor_value_info(
+            "input0", onnx.TensorProto.FLOAT, body_input_shapes[2]
+        )
+        input1 = onnx.helper.make_tensor_value_info(
+            "input1", onnx.TensorProto.FLOAT, body_input_shapes[3]
+        )
+        input2 = onnx.helper.make_tensor_value_info(
+            "input2", onnx.TensorProto.FLOAT, body_input_shapes[4]
+        )
+        state0 = onnx.helper.make_tensor_value_info(
+            "state0", onnx.TensorProto.FLOAT, body_input_shapes[0]
+        )
+        scan_out0 = onnx.helper.make_tensor_value_info(
+            "scan_out0", onnx.TensorProto.FLOAT, body_input_shapes[0]
+        )
+        matmul_out = onnx.helper.make_tensor_value_info(
+            "matmul_out", onnx.TensorProto.FLOAT, body_input_shapes[1]
+        )
+        state1 = onnx.helper.make_tensor_value_info(
+            "state1", onnx.TensorProto.FLOAT, body_input_shapes[1]
+        )
+        scan_out1 = onnx.helper.make_tensor_value_info(
+            "scan_out1", onnx.TensorProto.FLOAT, body_input_shapes[1]
+        )
+        add_node = onnx.helper.make_node(
+            "Add",
+            inputs=["initial0", "input0"],
+            outputs=["state0"],
+        )
+        id_node_0 = onnx.helper.make_node(
+            "Identity",
+            inputs=["state0"],
+            outputs=["scan_out0"],
+        )
+        matmul_node = onnx.helper.make_node(
+            "MatMul",
+            inputs=["input1", "input2"],
+            outputs=["matmul_out"],
+        )
+        sub_node = onnx.helper.make_node(
+            "Sub",
+            inputs=["initial1", "matmul_out"],
+            outputs=["state1"],
+        )
+        id_node_1 = onnx.helper.make_node(
+            "Identity",
+            inputs=["state1"],
+            outputs=["scan_out1"],
+        )
+        scan_body = onnx.helper.make_graph(
+            [add_node, id_node_0, matmul_node, sub_node, id_node_1],
+            "scan_body",
+            [initial0, initial1, input0, input1, input2],
+            [state0, state1, scan_out0, scan_out1],
+        )
+        # create scan op node
+        scan_node = None
+        if opset == 8:
+            scan_node = onnx.helper.make_node(
+                "Scan",
+                inputs=["", "init0", "init1", "in0", "in1", "in2"],
+                outputs=["s0", "s1", "scan0", "scan1"],
+                num_scan_inputs=num_scan_inputs,
+                body=scan_body,
+            )
+        else:
+            scan_node = onnx.helper.make_node(
+                "Scan",
+                inputs=["init0", "init1", "in0", "in1", "in2"],
+                outputs=["s0", "s1", "scan0", "scan1"],
+                num_scan_inputs=num_scan_inputs,
+                body=scan_body,
+                scan_input_axes=scan_input_axes,
+                scan_input_directions=scan_input_directions,
+                scan_output_axes=scan_output_axes,
+                scan_output_directions=scan_output_directions,
+            )
+        input_info = [
+            helper.make_tensor_value_info("init0", TensorProto.FLOAT, input_shapes[0]),
+            helper.make_tensor_value_info("init1", TensorProto.FLOAT, input_shapes[1]),
+            helper.make_tensor_value_info("in0", TensorProto.FLOAT, input_shapes[2]),
+            helper.make_tensor_value_info("in1", TensorProto.FLOAT, input_shapes[3]),
+            helper.make_tensor_value_info("in2", TensorProto.FLOAT, input_shapes[4]),
+        ]
+        out_info = [
+            helper.make_tensor_value_info("s0", TensorProto.FLOAT, output_shapes[0]),
+            helper.make_tensor_value_info("s1", TensorProto.FLOAT, output_shapes[1]),
+            helper.make_tensor_value_info("scan0", TensorProto.FLOAT, output_shapes[2]),
+            helper.make_tensor_value_info("scan1", TensorProto.FLOAT, output_shapes[3]),
+        ]
+        graph = helper.make_graph(
+            nodes=[scan_node],
+            name="scan_test",
+            inputs=input_info,
+            outputs=out_info,
+        )
+        model = onnx.helper.make_model(graph, producer_name="scan-test")
+        init0 = np.random.uniform(low=0, high=255, size=input_shapes[0]).astype(np.float32)
+        init1 = np.random.uniform(low=0, high=255, size=input_shapes[1]).astype(np.float32)
+        in0 = np.random.uniform(low=0, high=255, size=input_shapes[2]).astype(np.float32)
+        in1 = np.random.uniform(low=0, high=255, size=input_shapes[3]).astype(np.float32)
+        in2 = np.random.uniform(low=0, high=255, size=input_shapes[4]).astype(np.float32)
+        input_values = [init0, init1, in0, in1, in2]
+
+        verify_with_ort_with_inputs(
+            model,
+            input_values,
+            target=target,
+            dev=dev,
+            opt_level=2,
+            use_vm=True,
+            opset=opset,
+        )
+
+    # opset 8
+    input_shapes = [[2, 6, 7, 8], [2, 3, 3], [2, 5, 6, 7, 8], [2, 5, 3, 4], [2, 5, 4, 3]]
+    output_shapes = [[2, 6, 7, 8], [2, 3, 3], [2, 5, 6, 7, 8], [2, 5, 3, 3]]
+    # input_shapes, output_shapes, num_scan_inputs, scan_input_axes, scan_input_directions,
+    # scan_output_axes, scan_output_directions, opset
+    verify_scan(input_shapes, output_shapes, 3, [0] * 3, [0] * 3, [0] * 2, [0] * 2, 8)
+    # opset 9
+    input_shapes = [[6, 7, 8], [3, 3], [5, 6, 7, 8], [5, 3, 4], [5, 4, 3]]
+    output_shapes = [[6, 7, 8], [3, 3], [5, 6, 7, 8], [5, 3, 3]]
+    verify_scan(input_shapes, output_shapes, 3, [0] * 3, [0] * 3, [0] * 2, [0] * 2, 9)
+
+    input_shapes = [[6, 7, 8], [3, 3], [5, 6, 7, 8], [3, 4, 5], [4, 5, 3]]
+    output_shapes = [[6, 7, 8], [3, 3], [6, 5, 7, 8], [3, 5, 3]]
+    verify_scan(input_shapes, output_shapes, 3, [0, 2, 1], [1] * 3, [1] * 2, [1] * 2, 9)
+    # Negative axes
+    input_shapes = [[6, 7, 8], [3, 3], [5, 6, 7, 8], [3, 4, 5], [4, 5, 3]]
+    output_shapes = [[6, 7, 8], [3, 3], [6, 5, 7, 8], [3, 5, 3]]
+    verify_scan(input_shapes, output_shapes, 3, [-4, -1, -2], [1] * 3, [-3, -2], [1] * 2, 9)
+
+
 if __name__ == "__main__":
     test_flatten()
     test_reshape()
@@ -6124,6 +6228,7 @@ if __name__ == "__main__":
     test_convinteger()
     test_batch_matmul()
     test_global_lppool()
+    test_scan()
     test_random_uniform_like()
     test_random_normal()
     test_random_normal_like()
