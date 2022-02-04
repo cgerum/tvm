@@ -365,5 +365,5 @@ set(USE_CUTLASS OFF)
 # Enable to show a summary of TVM options
 set(SUMMARIZE OFF)
 
-# Whether to use generic Scale4Edge codegen
-set(USE_GENERIC ON)
+# Whether to use the Universal Modular Accelerator Interface
+set(USE_UMA ON)
