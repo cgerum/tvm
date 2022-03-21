@@ -46,23 +46,24 @@ static constexpr const char* kDefaultAlgo = "greedy_by_size";
 static std::unordered_map<String, std::function<Map<BufferInfo, PoolAllocation>(
                                       const Array<BufferInfo>&, const Integer&)>>
     algorithms{{"greedy_by_size", algo::GreedyBySize},
-               {"greedy_by_conflicts", algo::GreedyByConflicts}};
+               {"greedy_by_conflicts", algo::GreedyByConflicts},
+               {"hill_climb", algo::HillClimb}};
 
 IRModule PlanMemory(const IRModule& mod, String algo) {
   VLOG(1) << "workspace required = " << CalculateModuleWorkspaceSize(mod);
-  PrimFunc main_func = Downcast<PrimFunc>(mod->Lookup(::tvm::runtime::symbol::tvm_run_func_suffix));
+  PrimFunc main_func = Downcast<PrimFunc>(mod->Lookup(::tvm::runtime::symbol::tvm_module_main));
   BufferInfoAnalysis buffer_info_analysis = ExtractBufferInfo(main_func, mod);
   Array<BufferInfo> buffer_info_arr =
       CreateArrayBufferInfo(buffer_info_analysis->buffer_info_stmts);
   CHECK(algorithms.count(algo)) << "The selected USMP algorithm : " << algo
-                                << "is not defined. Please define it in the above algorithms map.";
+                                << " is not defined. Please define it in the above algorithms map.";
   Map<BufferInfo, PoolAllocation> buffer_info_pool_allocations =
       algorithms[algo](buffer_info_arr, buffer_info_analysis->memory_pressure);
   Map<Stmt, PoolAllocation> stmt_pool_allocations = AssignStmtPoolAllocations(
       buffer_info_analysis->buffer_info_stmts, buffer_info_pool_allocations);
   IRModule ret = transform::ConvertPoolAllocationsToOffsets(stmt_pool_allocations)(mod);
   tir::PrimFunc tir_main_func =
-      Downcast<tir::PrimFunc>(ret->Lookup(::tvm::runtime::symbol::tvm_run_func_suffix));
+      Downcast<tir::PrimFunc>(ret->Lookup(::tvm::runtime::symbol::tvm_module_main));
   Optional<Array<tir::usmp::AllocatedPoolInfo>> allocated_pool_infos =
       tir_main_func->GetAttr<Array<tir::usmp::AllocatedPoolInfo>>(tvm::attr::kPoolArgs);
   if (allocated_pool_infos) {

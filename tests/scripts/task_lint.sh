@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -24,6 +24,9 @@ cleanup()
 }
 trap cleanup 0
 
+
+echo "Convert scripts to Python..."
+tests/scripts/task_convert_scripts_to_python.sh
 
 echo "Checking file types..."
 python3 tests/lint/check_file_type.py

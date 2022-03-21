@@ -322,9 +322,8 @@ class BlockizedBindingExtractor {
         outer_iter_vars.push_back(outer_var);
         PrimExpr base = is_one(division[i][0]->extent) ? 0 : outer_var * division[i][1]->extent;
         // create iter var for the inner block
-        IterVar new_iter = iter_var;
-        auto* new_iter_node = new_iter.CopyOnWrite();
-        new_iter_node->dom = Range::FromMinExtent(0, division[i][1]->extent);
+        IterVar new_iter(Range::FromMinExtent(0, division[i][1]->extent), Var(iter_var->var),
+                         iter_var->iter_type, iter_var->thread_tag, iter_var->span);
         inner_iter_dom_map.Set(new_iter->var, arith::IntSet::FromRange(new_iter->dom));
         analyzer->Bind(new_iter->var, new_iter->dom);
         inner_iter_vars.push_back(new_iter);
@@ -515,8 +514,7 @@ StmtSRef Blockize(ScheduleState self, const StmtSRef& loop_sref) {
 
   // Step 8: Update the cached flags
   StmtSRef outer_block_sref = self->stmt2ref.at(outer_realize->block.get());
-  StmtSRef scope_root = tir::GetScopeRoot(self, outer_block_sref, /*require_stage_pipeline=*/false,
-                                          /*require_subtree_compact_dataflow=*/false);
+  StmtSRef scope_root = tir::GetScopeRoot(self, outer_block_sref, /*require_stage_pipeline=*/false);
   bool scope_block_affine_binding = self->IsAffineBlockBinding(scope_root);
   self->UpdateScopeBlockInfo(tir::GetBlockRealize(self, scope_root));
   self->block_info[scope_root].affine_binding = scope_block_affine_binding;
@@ -629,8 +627,7 @@ void Tensorize(ScheduleState self, const StmtSRef& block_or_loop_sref,
   self->Replace(block_sref, new_block, {{block_realize->block, new_block}});
 
   // Step 6: Update the cached flags.
-  StmtSRef scope_root = tir::GetScopeRoot(self, block_sref, /*require_stage_pipeline=*/false,
-                                          /*require_subtree_compact_dataflow=*/false);
+  StmtSRef scope_root = tir::GetScopeRoot(self, block_sref, /*require_stage_pipeline=*/false);
   self->UpdateScopeBlockInfo(static_cast<const BlockNode*>(scope_root->stmt)->body);
 }
 

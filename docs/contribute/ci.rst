@@ -80,9 +80,12 @@ Skip CI for Reverts
 -------------------
 
 For reverts and trivial forward fixes, adding ``[skip ci]`` to the revert's
-commit message will cause CI to shortcut and only run lint. Committers should
+PR title will cause CI to shortcut and only run lint. Committers should
 take care that they only merge CI-skipped PRs to fix a failure on ``main`` and
 not in cases where the submitter wants to shortcut CI to merge a change faster.
+The PR title is checked when the build is first run (specifically during the lint
+step, so changes after that has run do not affect CI and will require the job to
+be re-triggered by another ``git push``).
 
 .. code:: bash
 
@@ -117,7 +120,7 @@ disabling PR.
 
 .. code:: python
 
-    @pytest.mark.xfail(strict=False, reason="Flaky test: https://github.com/apache/tvm/issues/1234
+    @pytest.mark.xfail(strict=False, reason="Flaky test: https://github.com/apache/tvm/issues/1234")
     def test_something_flaky():
         pass
 

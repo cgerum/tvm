@@ -44,6 +44,7 @@ TVM_REGISTER_PASS_CONFIG_OPTION("tir.detect_global_barrier", Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION("tir.instrument_bound_checkers", Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION("tir.disable_assert", Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION("tir.disable_vectorize", Bool);
+TVM_REGISTER_PASS_CONFIG_OPTION("tir.disable_cse_tir", Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION("tir.disable_storage_rewrite", Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION("tir.is_entry_func", Bool);
 TVM_REGISTER_PASS_CONFIG_OPTION("tir.add_lower_pass", Array<Array<ObjectRef>>);
@@ -196,6 +197,7 @@ Array<tvm::transform::Pass> CreatePassList(bool disable_loop_partition) {
       pass_ctx->GetConfig<Bool>("tir.disable_storage_rewrite", Bool(false)).value();
   bool instrument_bound_checkers =
       pass_ctx->GetConfig<Bool>("tir.instrument_bound_checkers", Bool(false)).value();
+  bool disable_cse_tir = pass_ctx->GetConfig<Bool>("tir.disable_cse_tir", Bool(false)).value();
 
   // Get any user-added passes
   Array<Array<ObjectRef>> add_lower_pass =
@@ -240,6 +242,7 @@ Array<tvm::transform::Pass> CreatePassList(bool disable_loop_partition) {
   pass_list.push_back(tir::transform::InjectPrefetch());
   pass_list.push_back(tir::transform::TextureFlatten());
   pass_list.push_back(tir::transform::StorageFlatten(64, instrument_bound_checkers));
+  pass_list.push_back(tir::transform::LowerVtcmAlloc());
   pass_list.push_back(tir::transform::LowerCrossThreadReduction());
   pass_list.push_back(tir::transform::LowerInitBlock());
   pass_list.push_back(tir::transform::PlanAndUpdateBufferAllocationLocation());
@@ -247,6 +250,7 @@ Array<tvm::transform::Pass> CreatePassList(bool disable_loop_partition) {
   pass_list.push_back(tir::transform::UnifyThreadBinding());
   pass_list.push_back(tir::transform::CompactBufferAllocation());
   pass_list.push_back(tir::transform::LowerMatchBuffer());
+  pass_list.push_back(tir::transform::InjectSoftwarePipeline());
   pass_list.push_back(tir::transform::FlattenBuffer());
   pass_list.push_back(tir::transform::BF16Legalize());
   pass_list.push_back(tir::transform::NarrowDataType(32));
@@ -272,6 +276,7 @@ Array<tvm::transform::Pass> CreatePassList(bool disable_loop_partition) {
   pass_list.insert(pass_list.end(), user_lower_phase2.begin(), user_lower_phase2.end());
 
   // PHASE 3
+  pass_list.push_back(tir::transform::RenormalizeSplitPattern());
   pass_list.push_back(tir::transform::Simplify());
   pass_list.push_back(tir::transform::RemoveNoOp());
   pass_list.push_back(tir::transform::RewriteUnsafeSelect());
@@ -283,6 +288,9 @@ Array<tvm::transform::Pass> CreatePassList(bool disable_loop_partition) {
   if (instrument_bound_checkers) {
     pass_list.push_back(tir::transform::InstrumentBoundCheckers());
   }
+
+  pass_list.push_back(tir::transform::CommonSubexprElimTIR(!disable_cse_tir));
+
   return pass_list;
 }
 

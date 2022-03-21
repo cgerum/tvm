@@ -1009,7 +1009,9 @@ bool ReshapeLikeRel(const Array<Type>& types, int num_inputs, const Attrs& attrs
   auto output_type = TensorType(shape_like, data->dtype);
   if (is_static_shape) {
     ICHECK(reporter->AssertEQ(data->Size(), output_type->Size()))
-        << "Reshape inputs size should be compatible.";
+        << "Reshape inputs size should be compatible, "
+        << "but found data_shape " << data->shape << " not same as output_shape "
+        << output_type->shape;
   }
   reporter->Assign(types[2], output_type);
   return true;
@@ -1569,11 +1571,15 @@ inline te::Tensor DynamicArange(const te::Tensor& start, const te::Tensor& stop,
                                 const te::Tensor& step, tvm::DataType dtype,
                                 std::string name = "T_arange_dynamic",
                                 std::string tag = topi::kInjective) {
+  ICHECK_EQ(start.ndim(), 0);
+  ICHECK_EQ(stop.ndim(), 0);
+  ICHECK_EQ(step.ndim(), 0);
   tvm::PrimExpr num_elem = tvm::tir::Var("num_elem");
   return te::compute(
       {num_elem},
       [&](const Array<tvm::tir::Var>& indices) {
-        return tvm::cast(dtype, start[0] + step[0] * indices[0]);
+        Array<PrimExpr> empty_indices;
+        return tvm::cast(dtype, start(empty_indices) + step(empty_indices) * indices[0]);
       },
       name, tag);
 }
@@ -3322,8 +3328,7 @@ bool GatherRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
         << "Gather: expect indices type to be TensorType but get " << types[1];
     return false;
   }
-  ICHECK(indices->dtype.is_int() || indices->dtype.is_uint())
-      << "indices of gather must be tensor of integer";
+  ICHECK(indices->dtype.is_int()) << "indices of take must be tensor of integer";
   const auto param = attrs.as<GatherAttrs>();
   ICHECK(param != nullptr);
   ICHECK(param->axis.defined());

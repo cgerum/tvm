@@ -112,6 +112,14 @@ void InferTensorsVisitor::InferCall(const CallNode* cn) {
     SigmoidParams params;
     err += EthosnAPI::Sigmoid(cn->op.as<FunctionNode>()->body, &params);
     tensor_table_[cn->args[0]] = {params.input_info};
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_mean")) {
+    MeanParams params;
+    err += EthosnAPI::Mean(cn->op.as<FunctionNode>()->body, &params);
+    tensor_table_[cn->args[0]] = {params.input_info};
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_tanh")) {
+    TanhParams params;
+    err += EthosnAPI::Tanh(cn->op.as<FunctionNode>()->body, &params);
+    tensor_table_[cn->args[0]] = {params.input_info};
   } else if (IsEthosnOp(call, "qnn.concatenate")) {
     ConcatenateParams params;
     err = EthosnAPI::Concatenate(call, &params);
@@ -275,6 +283,12 @@ sl::TensorsAndId ConstructNetworkVisitor::HandleCall(const CallNode* cn) {
     return MakeOps(tensor);
   } else if (IsEthosnFunc(call, "ethos-n.qnn_sigmoid")) {
     if ((err = MakeSigmoidLayer(call, &tensor))) ReportFatalError(call, err);
+    return MakeOps(tensor);
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_mean")) {
+    if ((err = MakeMeanLayer(call, &tensor))) ReportFatalError(call, err);
+    return MakeOps(tensor);
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_tanh")) {
+    if ((err = MakeTanhLayer(call, &tensor))) ReportFatalError(call, err);
     return MakeOps(tensor);
   } else if (IsEthosnOp(call, "qnn.concatenate")) {
     if ((err = MakeConcatenateLayer(call, &tensor))) ReportFatalError(call, err);
@@ -448,6 +462,30 @@ EthosnError ConstructNetworkVisitor::MakeSigmoidLayer(const Call& call,
 
   try {
     *out = AddSigmoid(network_, *input);
+  } catch (const sl::NotSupportedException& e) {
+    return EthosnError(e.what());
+  }
+  return EthosnError();
+}
+
+EthosnError ConstructNetworkVisitor::MakeMeanLayer(const Call& call,
+                                                   sl::TensorAndId<sl::Operand>* out) {
+  auto input = operand_table_[call->args[0]][0];
+
+  try {
+    *out = AddMeanXy(network_, *input);
+  } catch (const sl::NotSupportedException& e) {
+    return EthosnError(e.what());
+  }
+  return EthosnError();
+}
+
+EthosnError ConstructNetworkVisitor::MakeTanhLayer(const Call& call,
+                                                   sl::TensorAndId<sl::Operand>* out) {
+  auto input = operand_table_[call->args[0]][0];
+
+  try {
+    *out = AddTanh(network_, *input);
   } catch (const sl::NotSupportedException& e) {
     return EthosnError(e.what());
   }
@@ -699,6 +737,7 @@ TVM_REGISTER_GLOBAL("relay.ethos-n.support.reshape")
     .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
       Call call = args[0];
       ReshapeParams params;
+      EthosnAPI::DefaultInputTensor(call);
       auto err = EthosnAPI::Reshape(call, &params);
       err += EthosnCompiler::SupportedSetup();
       char reason[kReasonMaxLength];
@@ -735,6 +774,28 @@ TVM_REGISTER_GLOBAL("relay.ethos-n.support.sigmoid")
       err += EthosnError(reason);
     });
 
+TVM_REGISTER_GLOBAL("relay.ethos-n.support.mean")
+    .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
+      Call call = args[0];
+      MeanParams params;
+      auto err = EthosnAPI::Mean(call, &params);
+      err += EthosnCompiler::SupportedSetup();
+      char reason[kReasonMaxLength];
+      reason[0] = '\0';
+      *rv = !err && EthosnCompiler::GetSupported()->IsMeanXySupported(params.input_info, nullptr,
+                                                                      reason, sizeof(reason));
+      err += EthosnError(reason);
+    });
+
+TVM_REGISTER_GLOBAL("relay.ethos-n.support.tanh")
+    .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
+      Call call = args[0];
+      TanhParams params;
+      auto err = EthosnAPI::Tanh(call, &params);
+      err += EthosnCompiler::SupportedSetup();
+      *rv = !err && EthosnCompiler::GetSupported()->IsTanhSupported(params.input_info);
+    });
+
 TVM_REGISTER_GLOBAL("relay.ethos-n.support.concatenate")
     .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
       Call call = args[0];
@@ -752,6 +813,7 @@ TVM_REGISTER_GLOBAL("relay.ethos-n.support.split")
     .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
       Call call = args[0];
       SplitParams params;
+      EthosnAPI::DefaultInputTensor(call);
       auto err = EthosnAPI::Split(call, &params);
       err += EthosnCompiler::SupportedSetup();
       char reason[kReasonMaxLength];

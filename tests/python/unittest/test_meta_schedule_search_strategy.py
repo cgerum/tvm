@@ -25,19 +25,18 @@ import tvm
 from tvm.ir import IRModule
 from tvm.meta_schedule import TuneContext
 from tvm.meta_schedule.builder import LocalBuilder
-from tvm.meta_schedule.cost_model import PyCostModel
-from tvm.meta_schedule.database import PyDatabase, TuningRecord, Workload
-from tvm.meta_schedule.mutator.mutator import PyMutator
+from tvm.meta_schedule.cost_model import RandomModel
 from tvm.meta_schedule.runner import LocalRunner, RunnerResult
 from tvm.meta_schedule.search_strategy import (
     EvolutionarySearch,
-    MeasureCandidate,
     ReplayFunc,
     ReplayTrace,
     SearchStrategy,
 )
 from tvm.meta_schedule.space_generator import ScheduleFn
 from tvm.meta_schedule.task_scheduler import RoundRobin
+from tvm.meta_schedule.utils import derived_object
+from tvm.meta_schedule.testing import DummyDatabase, DummyMutator
 from tvm.script import tir as T
 from tvm.tir.schedule import Schedule, Trace
 
@@ -116,96 +115,7 @@ def test_meta_schedule_replay_func(TestClass: SearchStrategy):  # pylint: disabl
     assert num_trials_each_iter == [7, 7, 6]
 
 
-def test_meta_schedule_evolutionary_search():  # pylint: disable = invalid-name
-    class DummyMutator(PyMutator):
-        """Dummy Mutator for testing"""
-
-        def initialize_with_tune_context(self, context: "TuneContext") -> None:
-            pass
-
-        def apply(self, trace: Trace) -> Optional[Trace]:
-            return Trace(trace.insts, {})
-
-    class DummyDatabase(PyDatabase):
-        """Dummy Database for testing"""
-
-        def __init__(self):
-            super().__init__()
-            self.records = []
-            self.workload_reg = []
-
-        def has_workload(self, mod: IRModule) -> bool:
-            for workload in self.workload_reg:
-                if tvm.ir.structural_equal(workload.mod, mod):
-                    return True
-            return False
-
-        def commit_tuning_record(self, record: TuningRecord) -> None:
-            self.records.append(record)
-
-        def commit_workload(self, mod: IRModule) -> Workload:
-            for workload in self.workload_reg:
-                if tvm.ir.structural_equal(workload.mod, mod):
-                    return workload
-            workload = Workload(mod)
-            self.workload_reg.append(workload)
-            return workload
-
-        def get_top_k(self, workload: Workload, top_k: int) -> List[TuningRecord]:
-            return list(
-                filter(
-                    lambda x: x.workload == workload,
-                    sorted(self.records, key=lambda x: sum(x.run_secs) / len(x.run_secs)),
-                )
-            )[: int(top_k)]
-
-        def __len__(self) -> int:
-            return len(self.records)
-
-        def print_results(self) -> None:
-            print("\n".join([str(r) for r in self.records]))
-
-    class RandomModel(PyCostModel):
-        """Random cost model for testing"""
-
-        random_state: Union[Tuple[str, np.ndarray, int, int, float], dict]
-        path: Optional[str]
-
-        def __init__(
-            self,
-            *,
-            seed: Optional[int] = None,
-            path: Optional[str] = None,
-            max_range: Optional[int] = 100,
-        ):
-            super().__init__()
-            if path is not None:
-                self.load(path)
-            else:
-                np.random.seed(seed)
-                self.random_state = np.random.get_state()
-            self.max_range = max_range
-
-        def load(self, path: str) -> None:
-            self.random_state = tuple(np.load(path, allow_pickle=True))
-
-        def save(self, path: str) -> None:
-            np.save(path, np.array(self.random_state, dtype=object), allow_pickle=True)
-
-        def update(
-            self,
-            context: TuneContext,
-            candidates: List[MeasureCandidate],
-            results: List[RunnerResult],
-        ) -> None:
-            pass
-
-        def predict(self, context: TuneContext, candidates: List[MeasureCandidate]) -> np.ndarray:
-            np.random.set_state(self.random_state)
-            result = np.random.rand(len(candidates)) * self.max_range
-            self.random_state = np.random.get_state()
-            return result
-
+def test_meta_schedule_evolutionary_search():  # pylint: disable = invalid-name]
     num_trials_per_iter = 10
     num_trials_total = 100
 
@@ -214,7 +124,7 @@ def test_meta_schedule_evolutionary_search():  # pylint: disable = invalid-name
         num_trials_total=num_trials_total,
         population_size=5,
         init_measured_ratio=0.1,
-        init_max_fail_count=10,
+        init_min_unmeasured=50,
         genetic_num_iters=3,
         genetic_mutate_prob=0.5,
         genetic_max_fail_count=10,
