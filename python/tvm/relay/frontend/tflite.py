@@ -33,7 +33,7 @@ from .. import qnn as _qnn
 from ..backend.name_transforms import sanitize_name
 from .common import ExprTable
 from .common import infer_shape as _infer_shape
-from .common import to_int_list
+from .common import to_int_list, shape_of
 from .tflite_flexbuffer import FlexBufferDecoder
 
 __all__ = ["from_tflite"]
@@ -846,7 +846,7 @@ class OperatorConverter(object):
         input_tensors = self.get_input_tensors(op)
         assert len(input_tensors) == 1, "input tensors length should be 1"
 
-        out = _op.shape_of(self.get_tensor_expr(input_tensors[0]))
+        out = shape_of(self.get_tensor_expr(input_tensors[0]))
 
         return out
 
@@ -1424,9 +1424,9 @@ class OperatorConverter(object):
         assert len(input_tensors) == 2, "input tensors length should be 2"
 
         lhs_tensor = input_tensors[0]
-        lhs_expr = self.get_expr(lhs_tensor.tensor_idx)
+        lhs_expr = self.get_tensor_expr(lhs_tensor)
         rhs_tensor = input_tensors[1]
-        rhs_expr = self.get_expr(rhs_tensor.tensor_idx)
+        rhs_expr = self.get_tensor_expr(rhs_tensor)
         out = relay_op(lhs_expr, rhs_expr)
 
         return out

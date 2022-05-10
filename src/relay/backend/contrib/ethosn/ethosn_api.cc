@@ -275,6 +275,11 @@ EthosnError EthosnAPI::Reshape(const Expr& expr, ReshapeParams* params) {
   const auto* input_dtype = reshape->args[0]->checked_type().as<TensorTypeNode>();
   const auto& reshape_attrs = reshape->attrs.as<ReshapeAttrs>();
 
+  if (reshape_attrs->newshape.size() > params->new_shape.size()) {
+    return EthosnError(ErrStrm() << "reshape dimension=" << reshape_attrs->newshape.size()
+                                 << ", reshape dimension must be <= " << params->new_shape.size());
+  }
+
   sl::TensorShape input_tensor_shape = {1, 1, 1, 1};
   sl::DataType input_data_type;
   EthosnError err = Tvm2Npu(input_dtype->shape, &input_tensor_shape);
@@ -390,6 +395,7 @@ EthosnError EthosnAPI::Sigmoid(const Expr& expr, SigmoidParams* params) {
                                       sl::QuantizationInfo(input_zp, input_sc));
   return err;
 }
+
 EthosnError EthosnAPI::Mean(const Expr& expr, MeanParams* params) {
   Call requantize = Downcast<Call>(expr);
   Call mean = Downcast<Call>(requantize->args[0]);
@@ -593,8 +599,8 @@ EthosnError EthosnAPI::Tvm2Npu(const Array<IndexExpr>& size, uint32_t* x, uint32
 }
 
 EthosnError EthosnAPI::Tvm2Npu(const std::string& dformat, sl::DataFormat* data_format) {
+  *data_format = sl::DataFormat::NCHW;
   if (dformat == "NCHW") {
-    *data_format = sl::DataFormat::NCHW;
     return EthosnError();
   } else if (dformat == "NHWC") {
     *data_format = sl::DataFormat::NHWC;
@@ -619,12 +625,12 @@ EthosnError EthosnAPI::Tvm2Npu(const Array<IndexExpr>& shape, sl::TensorShape* n
 }
 
 EthosnError EthosnAPI::Tvm2Npu(const tvm::DataType& dtype, sl::DataType* data_type) {
+  *data_type = sl::DataType::INT8_QUANTIZED;
   if (dtype.is_scalar() == 1) {
     if (dtype.is_uint() && dtype.bits() == 8) {
       *data_type = sl::DataType::UINT8_QUANTIZED;
       return EthosnError();
     } else if (dtype.is_int() && dtype.bits() == 8) {
-      *data_type = sl::DataType::INT8_QUANTIZED;
       return EthosnError();
     } else if (dtype.is_int() && dtype.bits() == 32) {
       *data_type = sl::DataType::INT32_QUANTIZED;
@@ -718,6 +724,7 @@ EthosnError EthosnAPI::AsConstant(const Expr& expr, std::valarray<float>* out) {
 // Get a T from a constant represented by a NDArray.
 template <typename T>
 EthosnError EthosnAPI::AsConstant(const Expr& expr, T* out) {
+  *out = {0};
   if (!expr->IsInstance<ConstantNode>()) {
     return EthosnError("expected constant data");
   }

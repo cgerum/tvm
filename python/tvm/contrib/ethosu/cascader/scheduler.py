@@ -22,8 +22,10 @@ import numpy as np
 
 from tvm import te
 from tvm import tir
+from tvm import PoolInfo
 from .cascader_options import CascaderOptions
 from .graph import CascaderGraph, Part, Tensor, TESubgraph
+from .parts import EthosuPart
 from .tensor_config import MemoryRegion
 from .proposal import Proposal
 from .proposal_generator import generate_proposals
@@ -43,7 +45,7 @@ def tile_nd(
     tensor : te.Tensor
         The tensor to apply the tiling to.
     tile : Tuple[int, ...]
-        The N-dimensional tile size.
+        The N-dimensional tile size
 
     Returns
     -------
@@ -77,8 +79,8 @@ def stripe_part(
         include_inputs=False,
     )
     g.compute_at(sch[te_output_tensor], outer_indices[-1])
-    for ax in outer_indices:
-        sch[te_output_tensor].unroll(ax)
+    for axis in outer_indices:
+        sch[te_output_tensor].unroll(axis)
 
     return sch[te_output_tensor], outer_indices[-1]
 
@@ -125,6 +127,23 @@ def apply_proposal(proposal: Proposal, sch: te.Schedule) -> None:
 
     """
     for plan in proposal.plans:
+        for part in plan.part_group:
+            if isinstance(part, EthosuPart):
+                tensor_config = plan.tensor_configs[part.output_tensor]
+                stripe_config = tensor_config.stripe_configs[0]
+                block_config = part.get_block_config(stripe_config)
+                iv = part.subgraph.output_tensor.op.axis[0]
+                block_shape = block_config.output_shape
+                if len(block_shape) == 4:
+                    height, width, depth = block_shape[1:]
+                else:
+                    height = block_shape[1]
+                    width = block_shape[3]
+                    depth = block_shape[2] * block_shape[4]
+                sch[part.subgraph.output_tensor].pragma(iv, "block_config_height", height)
+                sch[part.subgraph.output_tensor].pragma(iv, "block_config_width", width)
+                sch[part.subgraph.output_tensor].pragma(iv, "block_config_depth", depth)
+
         output_tensor_config = plan.output_config
         output_tensor = output_tensor_config.tensor
         output_part = output_tensor.producers[0]
@@ -178,6 +197,35 @@ def choose_proposal(proposals: List[Proposal], cascade_region: MemoryRegion):
             break
 
     return proposal_choice
+
+
+def extract_memory_info(memory_pool: PoolInfo) -> MemoryRegion:
+    "Create a MemoryRegion based on the info in the memory pool"
+    size = int(memory_pool.size_hint_bytes)
+    read_bandwidth = int(memory_pool.read_bandwidth_bytes_per_cycle)
+    write_bandwidth = int(memory_pool.write_bandwidth_bytes_per_cycle)
+
+    for param in (size, read_bandwidth, write_bandwidth):
+        assert param != -1, f"{param} needs to be specified for the cascader."
+
+    name_to_burst_lenght = {
+        target.kind.name: burst for target, burst in memory_pool.target_burst_bytes.items()
+    }
+
+    try:
+        burst_length = int(name_to_burst_lenght["ethos-u"])
+    except KeyError:
+        burst_length = 1
+
+    return MemoryRegion(
+        name=memory_pool.pool_name,
+        size=size,
+        read_bandwidth=read_bandwidth,
+        write_bandwidth=write_bandwidth,
+        read_latency=int(memory_pool.read_latency_cycles),
+        write_latency=int(memory_pool.write_latency_cycles),
+        burst_length=burst_length,
+    )
 
 
 def cascade(

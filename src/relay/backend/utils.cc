@@ -27,9 +27,7 @@
 
 #include <tvm/parser/parser.h>
 #include <tvm/relay/qnn/transform.h>
-
-#include "te_compiler.h"
-#include "tvm/runtime/ndarray.h"
+#include <tvm/runtime/ndarray.h>
 
 namespace tvm {
 namespace relay {
@@ -185,7 +183,8 @@ ExecutorCodegenMetadata::ExecutorCodegenMetadata(
     Array<tir::Var> inputs, Array<TensorType> input_tensor_types, Array<String> outputs,
     Array<TensorType> output_tensor_types, Array<tir::Var> pools, Array<String> devices,
     String executor, String mod_name, String interface_api, bool unpacked_api,
-    Map<tir::Var, tir::usmp::AllocatedPoolInfo> pool_inputs) {
+    Map<tir::Var, tir::usmp::AllocatedPoolInfo> pool_inputs,
+    Map<String, tir::usmp::PoolAllocation> io_pool_allocations) {
   auto n = make_object<ExecutorCodegenMetadataNode>();
   n->inputs = inputs;
   n->input_tensor_types = input_tensor_types;
@@ -198,12 +197,13 @@ ExecutorCodegenMetadata::ExecutorCodegenMetadata(
   n->unpacked_api = unpacked_api;
   n->mod_name = mod_name;
   n->pool_inputs = pool_inputs;
+  n->io_pool_allocations = io_pool_allocations;
   data_ = std::move(n);
 }
 
 TVM_REGISTER_NODE_TYPE(ExecutorCodegenMetadataNode);
 
-Array<Pass> GetPassPrefix(bool is_homegeneous, bool is_vm) {
+Array<Pass> GetPassPrefix(bool is_homogeneous, bool is_vm) {
   Array<Pass> pass_seqs;
   // TODO(mbs): Would be nice to get spans on all diagnostics, but since they arg forgotton
   // by most passes there's little utility in including this now. Plus we'd need to only do
@@ -216,7 +216,7 @@ Array<Pass> GetPassPrefix(bool is_homegeneous, bool is_vm) {
   pass_seqs.push_back(relay::qnn::transform::Legalize());
 
   // Legalize pass is restricted to homogeneous execution for now.
-  if (is_homegeneous) {
+  if (is_homogeneous) {
     pass_seqs.push_back(transform::Legalize());
   }
 
@@ -226,16 +226,6 @@ Array<Pass> GetPassPrefix(bool is_homegeneous, bool is_vm) {
     // eta expand to support constructors in argument position
     pass_seqs.push_back(transform::EtaExpand(
         /* expand_constructor */ true, /* expand_global_var */ false));
-  } else {
-    // DynamicToStatic runs FoldConstant, which affects SimplifyExpr below.
-    // Task extraction uses the is_vm=true branch, meaning SimplifyExpr sees different
-    // inputs from the ones when invoked via relay.build(...).
-    // This causes workload lookups in ApplyHistoryBest to fail if the lookup depends on
-    // the structual hash of the input relay module (e.g. MetaScheduler).
-    // TODO(masahi): Either remove DynamicToStatic below or always run it
-
-    // Convert Dynamic ops to static versions
-    pass_seqs.push_back(transform::DynamicToStatic());
   }
 
   PackedFunc fskip = PackedFunc([](TVMArgs args, TVMRetValue* rv) {
@@ -252,17 +242,17 @@ Array<Pass> GetPassPrefix(bool is_homegeneous, bool is_vm) {
     *rv = false;
   });
   pass_seqs.push_back(transform::EliminateCommonSubexpr(fskip));
-  pass_seqs.push_back(transform::SimplifyExpr());
   pass_seqs.push_back(transform::CombineParallelConv2D(3));
   pass_seqs.push_back(transform::CombineParallelDense(3));
   pass_seqs.push_back(transform::CombineParallelBatchMatmul(3));
   pass_seqs.push_back(transform::FoldConstant());
   pass_seqs.push_back(transform::FoldScaleAxis());
+  pass_seqs.push_back(transform::SimplifyExpr());
   pass_seqs.push_back(transform::CanonicalizeCast());
   pass_seqs.push_back(transform::CanonicalizeOps());
 
   // Alter layout transformation is currently only applied to homogeneous execution.
-  if (is_homegeneous) {
+  if (is_homogeneous) {
     if (!is_vm) {
       pass_seqs.push_back(transform::InferType());
     }
@@ -272,6 +262,8 @@ Array<Pass> GetPassPrefix(bool is_homegeneous, bool is_vm) {
   // Fast math optimizations.
   pass_seqs.push_back(transform::FastMath());
   pass_seqs.push_back(transform::FoldConstant());
+
+  pass_seqs.push_back(transform::FlattenAtrousConv());
   return pass_seqs;
 }
 

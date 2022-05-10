@@ -57,28 +57,81 @@ class OutlineCompilerFunctionsMutator : public MixedModeMutator {
   explicit OutlineCompilerFunctionsMutator(const IRModule& mod, const std::string& compiler_name)
       : mod_(mod), compiler_name_(compiler_name) {}
 
+  Expr VisitExpr_(const LetNode* op) final {
+    auto pre_visit = [this](const LetNode* op) {
+      Expr var = this->VisitExpr(op->var);
+      Expr value = this->VisitExpr(op->value);
+
+      // Outlineable function no longer needs let binding
+      if (this->CanOutlineExpr(value)) {
+        this->memo_[var] = value;
+      }
+    };
+    auto post_visit = [this](const LetNode* op) {
+      // Rely on the Memoizer to cache pre-visit values
+      Expr value = this->VisitExpr(op->value);
+      Expr body = this->VisitExpr(op->body);
+      auto expr = GetRef<Expr>(op);
+
+      // Drop the let binding
+      if (this->CanOutlineExpr(value)) {
+        this->memo_[expr] = this->VisitExpr(op->body);
+      } else {
+        Var var = Downcast<Var>(this->VisitExpr(op->var));
+        if (var.same_as(op->var) && value.same_as(op->value) && body.same_as(op->body)) {
+          this->memo_[expr] = expr;
+        } else {
+          this->memo_[expr] = Let(var, value, body);
+        }
+      }
+    };
+    ExpandANormalForm(op, pre_visit, post_visit);
+    return memo_[GetRef<Expr>(op)];
+  }
+
   Expr Rewrite_(const CallNode* pre, const Expr& post) override {
     Call call = Downcast<Call>(post);
-    if (call->op->IsInstance<FunctionNode>()) {
+    if (CanOutlineExpr(call->op)) {
       Function func = Downcast<Function>(call->op);
-      auto compiler = func->GetAttr<String>(attr::kCompiler);
-      if (compiler.defined() && compiler == compiler_name_) {
-        auto gv_name = func->GetAttr<String>("global_symbol").value_or("");
-        ICHECK_NE(gv_name, "")
-            << "Function to be outlined must have global_symbol attribute, but didn't.";
-        GlobalVar gv(gv_name);
-        if (func->checked_type_.defined()) {
-          gv->checked_type_ = func->checked_type();
-        }
-        mod_->Update(gv, func);
-        return Call(gv, call->args, call->attrs, call->type_args);
+      auto gv_name = func->GetAttr<String>("global_symbol").value_or("");
+      ICHECK_NE(gv_name, "")
+          << "Function to be outlined must have global_symbol attribute, but didn't.";
+      GlobalVar gv(gv_name);
+      if (func->checked_type_.defined()) {
+        gv->checked_type_ = func->checked_type();
       }
+      mod_->Update(gv, func);
+      return Call(gv, call->args, call->attrs, call->type_args);
     }
     return post;
   }
 
  private:
+  /*!
+   * \brief Check if the expr is a function and has the same
+   * compiler name as compiler_name_.
+   *
+   * \param expr The input expr.
+   * \return True if is outlineable else False.
+   */
+  bool CanOutlineExpr(const Expr& expr) {
+    if (!expr->IsInstance<FunctionNode>()) {
+      return false;
+    }
+    Function func = Downcast<Function>(expr);
+    auto compiler = func->GetAttr<String>(attr::kCompiler);
+    if (!compiler.defined()) {
+      return false;
+    }
+    if (compiler != compiler_name_) {
+      return false;
+    }
+    return true;
+  }
+
+  /*! \brief The module that the pass will run on. */
   IRModule mod_;
+  /*! \brief The name of the compiler to enable outlining on external functions for. */
   std::string compiler_name_;
 };
 
@@ -115,13 +168,13 @@ class RemoveRedundantIdentities : public MixedModeMutator {
   Expr Rewrite_(const CallNode* pre, const Expr& post) override {
     Call call = Downcast<Call>(post);
 
-    // only consider rewrite if current op is an NPU compute op.
+    // don't consider rewrite if current op is an identity or concatenate.
     if (!call->op->IsInstance<OpNode>()) {
       return post;
     }
     const auto* op = call->op.as<OpNode>();
     std::string op_name = op->name;
-    if (op_name.substr(0, 15) != "contrib.ethosu." || op_name == "contrib.ethosu.identity") {
+    if (op_name == "contrib.ethosu.identity" || op_name == "concatenate") {
       return post;
     }
 
@@ -129,10 +182,19 @@ class RemoveRedundantIdentities : public MixedModeMutator {
     bool needs_rewrite = false;
     Array<Expr> new_args;
     for (const auto& arg : call->args) {
-      if (const auto* parent_callnode = arg.as<CallNode>()) {
+      Expr current_arg = arg;
+
+      // expand tuple to get parent op if we run into one - nested tuples are not supported.
+      if (const auto* tuple_get_item = arg.as<TupleGetItemNode>()) {
+        const auto* tuple = tuple_get_item->tuple.as<TupleNode>();
+        current_arg = tuple->fields[tuple_get_item->index];
+      }
+
+      if (const auto* parent_callnode = current_arg.as<CallNode>()) {
         if (const auto* parent_op = parent_callnode->op.as<OpNode>()) {
           Call parent_call = GetRef<Call>(parent_callnode);
-          if (parent_op->name == "contrib.ethosu.identity" && IdentityDoesNothing(parent_call)) {
+          if (parent_op->name == "contrib.ethosu.identity" && IdentityDoesNothing(parent_call) &&
+              CheckIdentityBetweenTransformOperations(call, parent_call)) {
             needs_rewrite = true;
             new_args.push_back(parent_call->args[0]);
             continue;
@@ -143,7 +205,10 @@ class RemoveRedundantIdentities : public MixedModeMutator {
     }
 
     if (needs_rewrite) {
-      return Call(call->op, new_args, call->attrs, call->type_args);
+      Call new_call = Call(call->op, new_args, call->attrs, call->type_args);
+      // since we are only removing an identity, we know the type information has not changed
+      new_call->checked_type_ = call->checked_type_;
+      return new_call;
     }
     return post;
   }
@@ -155,6 +220,41 @@ class RemoveRedundantIdentities : public MixedModeMutator {
                                attrs->ofm_scale == 1.0 && attrs->ofm_zero_point == 0;
     bool has_no_activation = attrs->activation == "NONE";
     return does_not_requantize && has_no_activation;
+  }
+
+  bool CheckIdentityBetweenTransformOperations(const Call& call, const Call& identity_call) {
+    const auto* op = call->op.as<OpNode>();
+    std::vector<std::string> nc_ops = {"reshape", "strided_slice"};
+
+    if (op && (std::find(nc_ops.begin(), nc_ops.end(), op->name) != nc_ops.end())) {
+      // check if the parent to identity operation is also a non-compute operation,
+      // if it isn't we can safely remove the identity in question by returning true.
+      const auto* identity_arg = identity_call->args[0].as<CallNode>();
+      if (!identity_arg) {
+        return true;
+      }
+      const auto* identity_arg_op = identity_arg->op.as<OpNode>();
+      if (!identity_arg_op ||
+          !(std::find(nc_ops.begin(), nc_ops.end(), identity_arg_op->name) != nc_ops.end())) {
+        return true;
+      }
+
+      const auto* call_tt = call->checked_type_.as<TensorTypeNode>();
+      const auto* identity_arg_tt = identity_arg->checked_type_.as<TensorTypeNode>();
+      ICHECK(call_tt && identity_arg_tt)
+          << "InferType should be run before RemoveRedundantIdentities";
+
+      // we can only remove the identity operation if the second non-compute operation
+      // in the sequence does not reduce the dimensionality of the output to the first
+      // non-compute operation. Doing so could lead to data being accessed incorrectly
+      // by the subsequent compute operation due to the reduction in dimensionality.
+      size_t first_transform_op_dims = identity_arg_tt->shape.size();
+      size_t second_transform_op_dims = call_tt->shape.size();
+      if (second_transform_op_dims < first_transform_op_dims) {
+        return false;
+      }
+    }
+    return true;
   }
 };
 
@@ -177,8 +277,8 @@ tvm::transform::Pass IdentityOptimizer() {
         }
         return mod;
       };
-  return tvm::transform::CreateModulePass(pass_func, 0,
-                                          "relay.backend.contrib.ethos-u.IdentityOptimizer", {});
+  return tvm::transform::CreateModulePass(
+      pass_func, 0, "relay.backend.contrib.ethos-u.IdentityOptimizer", {"InferType"});
 }
 
 TVM_REGISTER_GLOBAL("relay.ext.ethos-u.IdentityOptimizer").set_body_typed(IdentityOptimizer);

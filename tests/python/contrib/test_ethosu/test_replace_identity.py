@@ -106,6 +106,7 @@ def test_identity(ifm_shape):
         activation=spec.SerialActivation(op="NONE", clip_min=0, clip_max=0),
         upscale="NONE",
         rounding_mode="TFL",
+        block_config=spec.SerialBlockConfig(0, 0, 0),
     )
 
     assert data[0] == ["ethosu_identity"] + list(serial_pooling)

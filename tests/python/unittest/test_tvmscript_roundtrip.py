@@ -3205,6 +3205,73 @@ def parse_bufferslice_as_range_bound():
     return segment_sum
 
 
+def int64_support():
+    @T.prim_func
+    def elementwise_shape_int64(a: T.handle, c: T.handle) -> None:
+        A = T.match_buffer(a, (T.int64(128), T.int64(128)), dtype="float32")
+        B = T.alloc_buffer((T.int64(128), T.int64(128)), dtype="float32")
+        C = T.match_buffer(c, (T.int64(128), T.int64(128)), dtype="float32")
+        for i, j in T.grid(128, 128):
+            with T.block("B"):
+                vi, vj = T.axis.remap("SS", [i, j])
+                B[vi, vj] = A[vi, vj] * 2.0
+        for i, j in T.grid(T.int64(128), T.int64(128)):
+            with T.block("C"):
+                vi, vj = T.axis.remap("SS", [i, j])
+                C[vi, vj] = B[vi, vj] + 1.0
+
+    return elementwise_shape_int64
+
+
+def string_annotation_escaping():
+    @T.prim_func
+    def string_annotation_of_special_chars():
+        T.func_attr(
+            {
+                "key1": '"\'hello\t\r"',
+                "key2": """
+            %1 = add i32 %0, %0
+            %2 = add i32 %0, %1
+            %3 = add i32 %1, %2
+            """,
+            }
+        )
+        T.evaluate(0)
+
+    return string_annotation_of_special_chars
+
+
+def pointer_type():
+    @T.prim_func
+    def func_with_ptr_type_annotations(x: T.Ptr[T.int32], y: T.Ptr[T.int32, "shared"]):
+        xx = T.allocate([16], "int32", "global")
+        yy = T.allocate([16], "int32", "shared")
+        a: T.Ptr[T.int32] = T.address_of(xx[0], dtype="handle")
+        b: T.Ptr[T.int32, "shared"] = T.address_of(yy[0], dtype="handle")
+        T.evaluate(T.call_extern("copy", a, b, dtype=""))
+
+    return func_with_ptr_type_annotations
+
+
+def buffer_axis_separator():
+    @T.prim_func
+    def element_wise(a: T.handle, c: T.handle) -> None:
+        A = T.match_buffer(a, (128, 128), "float32", axis_separators=[1])
+        C = T.match_buffer(c, (128, 128), "float32")
+        B = T.alloc_buffer((128, 128), "float32", axis_separators=[1])
+
+        for i, j in T.grid(128, 128):
+            with T.block("B"):
+                vi, vj = T.axis.remap("SS", [i, j])
+                B[vi, vj] = A[vi, vj] * T.float32(2)
+        for i, j in T.grid(128, 128):
+            with T.block("C"):
+                vi, vj = T.axis.remap("SS", [i, j])
+                C[vi, vj] = B[vi, vj] + T.float32(1)
+
+    return element_wise
+
+
 ir_generator = tvm.testing.parameter(
     opt_gemm_normalize,
     opt_gemm_lower,
@@ -3237,6 +3304,10 @@ ir_generator = tvm.testing.parameter(
     func_T_ptr_allocate,
     llvm_intrin_call,
     parse_bufferslice_as_range_bound,
+    int64_support,
+    string_annotation_escaping,
+    pointer_type,
+    buffer_axis_separator,
 )
 
 

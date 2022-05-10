@@ -19,8 +19,18 @@
 set -e
 set -u
 
+use_cache=false
+if [ $# -ge 1 ] && [[ "$1" == "--use-cache" ]]; then
+    use_cache=true
+    shift 1
+fi
+
 cd apps/hexagon_api
-rm -rf build
+
+if [ "$use_cache" = false ]; then
+    rm -rf build
+fi
+
 mkdir -p build
 cd build
 
@@ -34,5 +44,7 @@ cmake -DANDROID_ABI=arm64-v8a \
     -DUSE_HEXAGON_SDK="${HEXAGON_SDK_PATH}" \
     -DUSE_HEXAGON_TOOLCHAIN="${HEXAGON_TOOLCHAIN}" \
     -DUSE_OUTPUT_BINARY_DIR="${output_binary_directory}" ..
+    # TODO(hexagon-team): enable this once https://github.com/apache/tvm/issues/11237 is fixed.
+    # -DUSE_HEXAGON_GTEST="${HEXAGON_SDK_PATH}/utils/googletest/gtest" ..
 
 make -j$(nproc)

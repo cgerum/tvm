@@ -401,11 +401,6 @@ def assign_addresses(buffer_info, npu_ops, scratch_region_map):
 
     def replace_npu_fm_with_address(npu_fm):
         assert isinstance(npu_fm.tiles.addresses[0], tvm.tir.BufferLoad)
-        # We currently does not support tiles
-        # Change this when tiles are needed
-        # (i.e. when using rolling buffers)
-        assert npu_fm.tiles.addresses[1:] == [0, 0, 0]
-        npu_fm.tiles.addresses[1:] = [0, 0, 0]
         buffer = npu_fm.tiles.addresses[0].buffer.data
         if buffer in scratch_region_map.keys():
             address = scratch_region_map[buffer].offset
@@ -421,6 +416,13 @@ def assign_addresses(buffer_info, npu_ops, scratch_region_map):
             np.iinfo(np.dtype(npu_fm.tiles.addresses[0])).bits // 8
         )
         npu_fm.tiles.addresses[0] = address + int(index)
+        npu_fm.tiles.addresses[1] = (
+            address if isinstance(npu_fm.tiles.addresses[1], tvm.tir.BufferLoad) else 0
+        )
+        npu_fm.tiles.addresses[2] = (
+            address if isinstance(npu_fm.tiles.addresses[2], tvm.tir.BufferLoad) else 0
+        )
+        npu_fm.tiles.addresses[3] = 0
         npu_fm.region = region
         return npu_fm
 
@@ -439,6 +441,7 @@ def assign_addresses(buffer_info, npu_ops, scratch_region_map):
             )
         assert buffer in buffer_addresses.keys(), f"searching for buffer : {buffer}, but not found"
         address, buffer_type = buffer_addresses[buffer]
+        address = address + int(npu_addr_range.address.indices[0].value)
         return vapi.NpuAddressRange(_get_region(buffer_type), address, npu_addr_range.length)
 
     def replace_tir_loads(npu_object):
@@ -604,13 +607,30 @@ def _create_npu_op_conv2d(
     """This is a helper function to capture a list
     of arguments to create Vela NpuConv2DOperation object.
     """
+    has_two_weights = serial_2d_convolution.weight2.address != -1
+    has_two_biases = serial_2d_convolution.scale_bias2.address != -1
+
     npu_conv2d_op = vapi.NpuConv2DOperation()
     npu_conv2d_op.ifm = _create_npu_feature_map(serial_2d_convolution.ifm)
     npu_conv2d_op.ofm = _create_npu_feature_map(serial_2d_convolution.ofm)
     npu_conv2d_op.kernel = _create_npu_kernel(serial_2d_convolution.kernel)
-    npu_conv2d_op.weights = [_create_npu_address_range(serial_2d_convolution.weight)]
+    npu_conv2d_op.weights = (
+        [
+            _create_npu_address_range(serial_2d_convolution.weight),
+            _create_npu_address_range(serial_2d_convolution.weight2),
+        ]
+        if has_two_weights
+        else [_create_npu_address_range(serial_2d_convolution.weight)]
+    )
     weights_zero_point = np.int64(serial_2d_convolution.weight_zero_point.value)
-    npu_conv2d_op.biases = [_create_npu_address_range(serial_2d_convolution.scale_bias)]
+    npu_conv2d_op.biases = (
+        [
+            _create_npu_address_range(serial_2d_convolution.scale_bias),
+            _create_npu_address_range(serial_2d_convolution.scale_bias2),
+        ]
+        if has_two_biases
+        else [_create_npu_address_range(serial_2d_convolution.scale_bias)]
+    )
     npu_conv2d_op.padding = _create_npu_padding(serial_2d_convolution.padding)
 
     npu_conv2d_op.activation = _create_npu_activation(serial_2d_convolution.activation)
@@ -622,7 +642,6 @@ def _create_npu_op_conv2d(
 
     npu_conv2d_op.rounding_mode = _create_npu_rounding_mode(serial_2d_convolution.rounding_mode)
     npu_conv2d_op.ifm_upscale = _create_npu_resampling_mode(serial_2d_convolution.upscale)
-    accel_config = vela_api.get_accelerator_config()
     weights_shape_ohwi = [
         npu_conv2d_op.ofm.shape.depth,
         npu_conv2d_op.kernel.height,
@@ -634,8 +653,13 @@ def _create_npu_op_conv2d(
         weights_shape_ohwi=weights_shape_ohwi,
         ifm_bitdepth=npu_conv2d_op.ifm.data_type.size_in_bits(),
     )
-    block_config = vela_api.get_optimal_block_config(npu_conv2d_op, accel_config)
-    npu_conv2d_op.block_config = block_config
+    npu_conv2d_op.block_config = _create_npu_block_config(serial_2d_convolution.block_config)
+
+    if not npu_conv2d_op.block_config:
+        target_accel_config = vela_api.get_accelerator_config()
+        block_config = vela_api.get_optimal_block_config(npu_conv2d_op, target_accel_config)
+        npu_conv2d_op.block_config = block_config
+
     return npu_conv2d_op, weights_zero_point
 
 
@@ -685,9 +709,16 @@ def _create_npu_op_depthwise_conv2d(serial_2d_depthwise):
         serial_2d_depthwise.rounding_mode
     )
     npu_depthwise_conv2d_op.ifm_upscale = _create_npu_resampling_mode(serial_2d_depthwise.upscale)
-    target_accel_config = vela_api.get_accelerator_config()
-    block_config = vela_api.get_optimal_block_config(npu_depthwise_conv2d_op, target_accel_config)
-    npu_depthwise_conv2d_op.block_config = block_config
+    npu_depthwise_conv2d_op.block_config = _create_npu_block_config(
+        serial_2d_depthwise.block_config
+    )
+
+    if not npu_depthwise_conv2d_op.block_config:
+        target_accel_config = vela_api.get_accelerator_config()
+        block_config = vela_api.get_optimal_block_config(
+            npu_depthwise_conv2d_op, target_accel_config
+        )
+        npu_depthwise_conv2d_op.block_config = block_config
 
     return npu_depthwise_conv2d_op, weights_zero_point
 
@@ -796,6 +827,19 @@ def _create_npu_padding(serial_padding: spec.SerialPadding) -> vapi.NpuPadding:
         right=int(serial_padding.right),
     )
     return padding
+
+
+def _create_npu_block_config(serial_block_config: spec.SerialBlockConfig) -> vapi.NpuShape3D:
+    """A helper function to convert a SerialBlockConfig into an NpuShape3D"""
+    if serial_block_config.height * serial_block_config.width * serial_block_config.depth == 0:
+        return None
+
+    block_config = vapi.NpuShape3D(
+        height=int(serial_block_config.height),
+        width=int(serial_block_config.width),
+        depth=int(serial_block_config.depth),
+    )
+    return block_config
 
 
 def _create_npu_activation(serial_activation: spec.SerialActivation) -> vapi.NpuActivation:
@@ -917,10 +961,12 @@ def _create_npu_op_pooling(serial_pooling: spec.SerialPooling):
 
     npu_pooling_op.rounding_mode = _create_npu_rounding_mode(serial_pooling.rounding_mode)
     npu_pooling_op.ifm_upscale = _create_npu_resampling_mode(serial_pooling.upscale)
+    npu_pooling_op.block_config = _create_npu_block_config(serial_pooling.block_config)
 
-    target_accel_config = vela_api.get_accelerator_config()
-    block_config = vela_api.get_optimal_block_config(npu_pooling_op, target_accel_config)
-    npu_pooling_op.block_config = block_config
+    if not npu_pooling_op.block_config:
+        target_accel_config = vela_api.get_accelerator_config()
+        block_config = vela_api.get_optimal_block_config(npu_pooling_op, target_accel_config)
+        npu_pooling_op.block_config = block_config
 
     return npu_pooling_op
 
@@ -984,10 +1030,16 @@ def _create_npu_op_binary_elementwise(serial_binary_elementwise: spec.SerialBina
     npu_binary_elementwise_op.rounding_mode = _create_npu_rounding_mode(
         serial_binary_elementwise.rounding_mode
     )
+    npu_binary_elementwise_op.block_config = _create_npu_block_config(
+        serial_binary_elementwise.block_config
+    )
 
-    target_accel_config = vela_api.get_accelerator_config()
-    block_config = vela_api.get_optimal_block_config(npu_binary_elementwise_op, target_accel_config)
-    npu_binary_elementwise_op.block_config = block_config
+    if not npu_binary_elementwise_op.block_config:
+        target_accel_config = vela_api.get_accelerator_config()
+        block_config = vela_api.get_optimal_block_config(
+            npu_binary_elementwise_op, target_accel_config
+        )
+        npu_binary_elementwise_op.block_config = block_config
 
     return npu_binary_elementwise_op
 
@@ -1037,8 +1089,15 @@ def _create_npu_op_unary_elementwise(serial_unary_elementwise):
     npu_unary_elementwise_op.rounding_mode = _create_npu_rounding_mode(
         serial_unary_elementwise.rounding_mode
     )
-    target_accel_type = vela_api.get_accelerator_config()
-    block_config = vela_api.get_optimal_block_config(npu_unary_elementwise_op, target_accel_type)
-    npu_unary_elementwise_op.block_config = block_config
+    npu_unary_elementwise_op.block_config = _create_npu_block_config(
+        serial_unary_elementwise.block_config
+    )
+
+    if not npu_unary_elementwise_op.block_config:
+        target_accel_type = vela_api.get_accelerator_config()
+        block_config = vela_api.get_optimal_block_config(
+            npu_unary_elementwise_op, target_accel_type
+        )
+        npu_unary_elementwise_op.block_config = block_config
 
     return npu_unary_elementwise_op
