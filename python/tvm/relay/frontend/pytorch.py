@@ -319,6 +319,31 @@ class PyTorchOpConverter:
         (dtype,) = input_types
         return _op.power(inputs[0], _expr.const(2, dtype))
 
+    def tril(self, inputs, input_types):
+        data = inputs[0]
+        if len(inputs) == 2:
+            k_value = inputs[1]
+        else:
+            k_value = 0
+        input_shape = self.infer_shape(data)
+        k1, k2 = input_shape[-2:]
+        k1 = k_value + 1
+        diag_input = _op.zeros(input_shape, dtype=input_types[0])
+        return _op.matrix_set_diag(data, diag_input, k=(k1, k2))
+
+    def triu(self, inputs, input_types):
+        data = inputs[0]
+        if len(inputs) == 2:
+            k_value = inputs[1]
+        else:
+            k_value = 0
+        input_shape = self.infer_shape(data)
+        k1, k2 = input_shape[-2:]
+        k1 = (k1 * -1) - 1
+        k2 = k_value - 1
+        diag_input = _op.zeros(input_shape, dtype=input_types[0])
+        return _op.matrix_set_diag(data, diag_input, k=(k1, k2))
+
     def arange(self, inputs, input_types):
         def _get_value(val, dtype):
             # dtype is a tvm dtype
@@ -701,6 +726,21 @@ class PyTorchOpConverter:
 
         return out
 
+    def new_ones(self, inputs, input_types):
+        size = inputs[1]
+
+        import torch
+
+        if not isinstance(size, (_expr.Expr, list, tuple, torch.Size, np.ndarray)):
+            msg = "Data type %s could not be parsed in ones op" % (type(size))
+            raise AssertionError(msg)
+
+        if inputs[2] is not None:
+            dtype = _convert_dtype_value(inputs[2])
+        else:
+            dtype = input_types[0]
+        return self.full_impl(size, 1, dtype)
+
     def zeros(self, inputs, input_types):
         data = inputs[0]
 
@@ -764,6 +804,28 @@ class PyTorchOpConverter:
             out = _op.cast(out, dtype)
 
         return out
+
+    def new_full(self, inputs, input_types):
+        data = inputs[1]
+        fill_value = inputs[2]
+        import torch
+
+        if not isinstance(data, (_expr.Expr, list, tuple, torch.Size)):
+            msg = "Data type %s could not be parsed in full op" % (type(data))
+            raise AssertionError(msg)
+
+        if inputs[3] is not None:  # dtype given
+            dtype = _convert_dtype_value(inputs[3])
+        else:
+            # if dtype is None, use the dtype of the input tensor
+            dtype = self.infer_type(input[0])
+
+        return self.full_impl(data, fill_value, dtype)
+
+    def fill_(self, inputs, input_types):
+        data = inputs[0]
+        fill_value = inputs[1]
+        return self.full_impl(self.infer_shape(data), fill_value, input_types[0])
 
     def linspace(self, inputs, input_types):
         start = inputs[0]
@@ -866,6 +928,63 @@ class PyTorchOpConverter:
     def log_sigmoid(self, inputs, input_types):
         data = inputs[0]
         return _op.log(_op.tensor.sigmoid(data))
+
+    def cross_entropy_loss_with_logits(self, inputs, input_types):
+        input = inputs[0]
+        target = inputs[1]
+        weights = inputs[2]
+        reduction = inputs[3]
+        ignore_index = inputs[4]
+        label_smoothing = inputs[5]
+        input_shape = self.infer_shape(input)
+        target_shape = self.infer_shape(target)
+        if input_shape != target_shape:
+            if reduction == 0:
+                reduction = "none"
+            elif reduction == 1:
+                reduction = "mean"
+            else:
+                reduction = "sum"
+            num_class = self.infer_shape(input)[1]
+            if weights is None:
+                weights = _op.full(_expr.const(1), (num_class,), dtype=input_types[0])
+            return _op.nn.nll_loss(
+                _op.nn.log_softmax(input), target, weights, reduction, ignore_index
+            )
+        assert reduction == 1, "reduction not supported in cross_entropy_loss"
+        assert ignore_index == -100, "ignore_index not supported in cross_entropy_loss"
+        assert label_smoothing == 0.0, "label_smoothing not supported in cross_entropy_loss"
+        assert weights is None, "weight not supported in cross_entropy_loss"
+        return _op.nn.cross_entropy_with_logits(_op.nn.log_softmax(input), target)
+
+    def l1_loss(self, inputs, input_types):
+        assert len(inputs) == 3
+        [predictions, targets, reduction] = inputs
+        delta = _op.abs(_op.subtract(predictions, targets))
+        if reduction == 0:
+            # reduction = "none"
+            return delta
+        elif reduction == 1:
+            # reduction = "mean"
+            return _op.mean(delta)
+        else:
+            # reduction = "sum"
+            return _op.sum(delta)
+
+    def mse_loss(self, inputs, input_types):
+        assert len(inputs) == 3
+        [predictions, targets, reduction] = inputs
+        delta = _op.subtract(predictions, targets)
+        delta = _op.power(delta, _expr.const(2, input_types[0]))
+        if reduction == 0:
+            # reduction = "none"
+            return delta
+        elif reduction == 1:
+            # reduction = "mean"
+            return _op.mean(delta)
+        else:
+            # reduction = "sum"
+            return _op.sum(delta)
 
     def hard_sigmoid(self, inputs, input_types):
         def _relu6(x):
@@ -1395,6 +1514,11 @@ class PyTorchOpConverter:
             new_shape = _op.concatenate(new_shape, axis=0)
         else:
             new_shape = tmp_shape
+        return _op.transform.reshape(data, new_shape)
+
+    def reshape_as(self, inputs, input_types):
+        data = inputs[0]
+        new_shape = self.infer_shape(inputs[1])
         return _op.transform.reshape(data, new_shape)
 
     def pixel_shuffle(self, inputs, input_types):
@@ -2372,6 +2496,22 @@ class PyTorchOpConverter:
         shape = inputs[0]
         return _op.zeros(shape, _convert_dtype_value(inputs[1]))
 
+    def empty_like(self, inputs, input_types):
+        shape = self.infer_shape(inputs[0])
+        if inputs[1] is not None:
+            dtype = _convert_dtype_value(inputs[1])
+        else:
+            dtype = input_types[0]
+        return _op.zeros(shape, dtype)
+
+    def randn(self, inputs, input_types):
+        import time  # use current time as seed
+
+        shape = inputs[0]
+        output = _op.random.normal(_op.random.threefry_key(int(time.time())), shape)
+        _, values = _expr.TupleWrapper(output, 2)
+        return values
+
     def bincount(self, inputs, input_types):
         data = inputs[0]
         weights = inputs[1]
@@ -3091,8 +3231,11 @@ class PyTorchOpConverter:
             "aten::ones_like": self.ones_like,
             "aten::zeros": self.zeros,
             "aten::zeros_like": self.zeros_like,
+            "aten::new_ones": self.new_ones,
             "aten::full": self.full,
             "aten::full_like": self.full_like,
+            "aten::new_full": self.new_full,
+            "aten::fill_": self.fill_,
             "aten::linspace": self.linspace,
             "aten::reciprocal": self.reciprocal,
             "aten::repeat": self.repeat,
@@ -3157,6 +3300,7 @@ class PyTorchOpConverter:
             "aten::size": self.size,
             "aten::view": self.view,
             "aten::reshape": self.reshape,
+            "aten::reshape_as": self.reshape_as,
             "aten::clone": self.clone,
             "aten::log_softmax": self.log_softmax,
             "aten::sigmoid": self.sigmoid,
@@ -3217,6 +3361,8 @@ class PyTorchOpConverter:
             "aten::sqrt": self.make_unary("sqrt"),
             "aten::rsqrt": self.make_unary("rsqrt"),
             "aten::square": self.square,
+            "aten::tril": self.tril,
+            "aten::triu": self.triu,
             "aten::ceil": self.make_unary("ceil"),
             "aten::floor": self.make_unary("floor"),
             "aten::round": self.make_unary("round"),
@@ -3276,6 +3422,8 @@ class PyTorchOpConverter:
             "aten::tensor": self.identity,  # used for example in tensor(1.0)
             "aten::numel": self.numel,
             "aten::empty": self.empty,
+            "aten::empty_like": self.empty_like,
+            "aten::randn": self.randn,
             "aten::bincount": self.bincount,
             "aten::scatter_add": self.scatter_add,
             "aten::__not__": self.logical_not,
@@ -3290,6 +3438,9 @@ class PyTorchOpConverter:
             "aten::nll_loss": self.nll_loss,
             "aten::nll_loss2d": self.nll_loss,
             "aten::nll_loss_nd": self.nll_loss,
+            "aten::cross_entropy_loss": self.cross_entropy_loss_with_logits,
+            "aten::l1_loss": self.l1_loss,
+            "aten::mse_loss": self.mse_loss,
             "aten::flip": self.flip,
             "aten::gru": self.gru,
             "aten::lstm": self.lstm,
