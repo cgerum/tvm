@@ -18,6 +18,10 @@
 import pytest
 import tvm
 
+from tvm.relay.backend.contrib.uma import uma_available
+
+pytestmark = pytest.mark.skipif(not uma_available(), reason="UMA not available")
+
 
 @pytest.mark.parametrize(
     "target_name,target_attrs,target_args",
