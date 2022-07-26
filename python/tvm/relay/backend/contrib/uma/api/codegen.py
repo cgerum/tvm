@@ -50,12 +50,13 @@ class UMACodegen(object):
         """
         if includes is not None:
             tvm._ffi.register_func(
-                "relay.ext.uma.codegen_c_includes_{}".format(self.target_name), includes
+                "relay.ext.uma.codegen_c_includes_{}".format(self.target_name), includes, override=True
             )
         if replace_call_extern is not None:
             tvm._ffi.register_func(
                 "relay.ext.uma.codegen_c_replace_call_extern_{}".format(self.target_name),
                 replace_call_extern,
+                override=True
             )
 
     def register(self) -> None:
