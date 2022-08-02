@@ -244,6 +244,8 @@ def make_predicate(checker):
         for e, op_name in zip([expr, expr.args[0]], ["sum", "bias_add"]):
             args = get_args(e)
             attrs = get_attrs(e.args[0])
+            if attrs is None:
+                return False
             if not checker(attrs, args, op_name):
                 return False
         return True
